@@ -1,50 +1,57 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const [coreStatus, setCoreStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  const checkCoreStatus = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await invoke("get_core_status");
+      setCoreStatus(response);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
+      <h1>Porthunt</h1>
+      <p>Local Developer Port & Process Manager</p>
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+      <div style={{ marginTop: "2rem", padding: "1rem", border: "1px solid #ccc", borderRadius: "8px" }}>
+        <h3>System IPC Status</h3>
+        <p>
+          Rust Core:{" "}
+          {coreStatus ? (
+            <span style={{ color: "green", fontWeight: "bold" }}>✅ Connected</span>
+          ) : (
+            <span style={{ color: "orange", fontWeight: "bold" }}>❌ Not checked</span>
+          )}
+        </p>
+
+        {coreStatus && (
+          <blockquote style={{ background: "#f0f0f0", padding: "0.5rem 1rem", borderRadius: "4px" }}>
+            {coreStatus}
+          </blockquote>
+        )}
+
+        {error && <p style={{ color: "red" }}>Error: {error}</p>}
+
+        <button 
+          onClick={checkCoreStatus} 
+          disabled={loading}
+          style={{ padding: "0.5rem 1rem", cursor: "pointer" }}
+        >
+          {loading ? "Checking..." : "Check Rust Core"}
+        </button>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    </div>
   );
 }
 

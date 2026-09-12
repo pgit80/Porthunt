@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 use sysinfo::{Pid, ProcessRefreshKind, System, UpdateKind};
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,31 +70,13 @@ impl WindowsPortAdapter {
 
         "Generic Process".to_string()
     }
-
-    fn fetch_cmdline_via_wmi(pid: u32) -> String {
-        let script = format!(
-            "Get-CimInstance Win32_Process -Filter \"ProcessId = {}\" | Select-Object -ExpandProperty CommandLine",
-            pid
-        );
-
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
-            .output();
-
-        match output {
-            Ok(out) if out.status.success() => {
-                let cmd = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if cmd.is_empty() { "N/A".to_string() } else { cmd }
-            }
-            _ => "N/A".to_string(),
-        }
-    }
 }
 
 impl PortDiscovery for WindowsPortAdapter {
     fn get_listening_ports(&self) -> Result<Vec<PortInfo>, String> {
         let output = Command::new("netstat")
             .args(["-ano"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(|e| format!("Failed to execute netstat command: {}", e))?;
 
@@ -147,7 +132,7 @@ impl PortDiscovery for WindowsPortAdapter {
             };
 
             let sys_pid = Pid::from_u32(pid_u32);
-            let (process_name, exe_path, mut command_line) = match sys.process(sys_pid) {
+            let (process_name, exe_path, command_line) = match sys.process(sys_pid) {
                 Some(proc_) => {
                     let name = proc_.name().to_string();
                     let exe = proc_
@@ -167,10 +152,6 @@ impl PortDiscovery for WindowsPortAdapter {
                 None => ("Unknown".to_string(), "N/A".to_string(), "N/A".to_string()),
             };
 
-            if command_line == "N/A" && pid_u32 > 4 {
-                command_line = Self::fetch_cmdline_via_wmi(pid_u32);
-            }
-
             let app_type = Self::identify_application(&process_name, &exe_path, &command_line);
 
             ports.push(PortInfo {
@@ -189,14 +170,11 @@ impl PortDiscovery for WindowsPortAdapter {
     }
 }
 
-/// Helper function to validate whether a PID is safe to terminate
 fn is_safe_to_kill(pid: u32, process_name: &str) -> Result<(), String> {
-    // 1. Prevent killing System or low-level core PIDs
     if pid < 100 {
         return Err(format!("Action blocked: PID {} is a protected system process.", pid));
     }
 
-    // 2. Prevent killing critical OS binaries
     let name_lower = process_name.to_lowercase();
     let protected_processes = [
         "system",
@@ -221,9 +199,13 @@ fn is_safe_to_kill(pid: u32, process_name: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_listening_ports() -> Result<Vec<PortInfo>, String> {
-    let adapter = WindowsPortAdapter;
-    adapter.get_listening_ports()
+async fn get_listening_ports() -> Result<Vec<PortInfo>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let adapter = WindowsPortAdapter;
+        adapter.get_listening_ports()
+    })
+    .await
+    .map_err(|e| format!("Join error executing background task: {}", e))?
 }
 
 #[tauri::command]
@@ -232,23 +214,20 @@ fn kill_process_by_pid(pid: u32) -> Result<String, String> {
     let mut sys = System::new();
     sys.refresh_processes();
 
-    // Fetch process name for security check
     let process_name = match sys.process(sys_pid) {
         Some(proc_) => proc_.name().to_string(),
         None => "Unknown".to_string(),
     };
 
-    // Run security validation rules
     is_safe_to_kill(pid, &process_name)?;
 
-    // Terminate process directly via sysinfo API
     if let Some(proc_) = sys.process(sys_pid) {
         if proc_.kill() {
             Ok(format!("Successfully killed process '{}' (PID {}).", process_name, pid))
         } else {
-            // Fallback to taskkill /F /PID if sysinfo fails
             let output = Command::new("taskkill")
                 .args(["/F", "/PID", &pid.to_string()])
+                .creation_flags(CREATE_NO_WINDOW)
                 .output()
                 .map_err(|e| format!("Failed to execute taskkill: {}", e))?;
 
